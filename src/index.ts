@@ -13,13 +13,14 @@
 // limitations under the License.
 
 import * as core from '@actions/core';
-import {GitHub, Manifest, CreatedRelease, PullRequest, VERSION} from 'release-please';
+import {CreatedRelease, GitHub, Manifest, PullRequest, VERSION} from 'release-please';
 
 const DEFAULT_CONFIG_FILE = 'release-please-config.json';
 const DEFAULT_MANIFEST_FILE = '.release-please-manifest.json';
 const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
 const DEFAULT_GITHUB_GRAPHQL_URL = 'https://api.github.com';
 const DEFAULT_GITHUB_SERVER_URL = 'https://github.com';
+const DEFAULT_PRERELEASE = false;
 
 interface Proxy {
   host: string;
@@ -45,10 +46,12 @@ interface ActionInputs {
   changelogHost: string;
   versioningStrategy?: string;
   releaseAs?: string;
+  prerelease?: boolean;
+  prereleaseType?: string;
 }
 
 function parseInputs(): ActionInputs {
-  const inputs: ActionInputs = {
+  return {
     token: core.getInput('token', {required: true}),
     releaseType: getOptionalInput('release-type'),
     path: getOptionalInput('path'),
@@ -58,8 +61,8 @@ function parseInputs(): ActionInputs {
     manifestFile: core.getInput('manifest-file') || DEFAULT_MANIFEST_FILE,
     githubApiUrl: core.getInput('github-api-url') || DEFAULT_GITHUB_API_URL,
     githubGraphqlUrl:
-      (core.getInput('github-graphql-url') || '').replace(/\/graphql$/, '') ||
-      DEFAULT_GITHUB_GRAPHQL_URL,
+        (core.getInput('github-graphql-url') || '').replace(/\/graphql$/, '') ||
+        DEFAULT_GITHUB_GRAPHQL_URL,
     proxyServer: getOptionalInput('proxy-server'),
     skipGitHubRelease: getOptionalBooleanInput('skip-github-release'),
     skipGitHubPullRequest: getOptionalBooleanInput('skip-github-pull-request'),
@@ -69,8 +72,9 @@ function parseInputs(): ActionInputs {
     changelogHost: core.getInput('changelog-host') || DEFAULT_GITHUB_SERVER_URL,
     versioningStrategy: getOptionalInput('versioning-strategy'),
     releaseAs: getOptionalInput('release-as'),
+    prerelease: getOptionalBooleanInput('prerelease'),
+    prereleaseType: getOptionalInput('prerelease-type'),
   };
-  return inputs;
 }
 
 function getOptionalInput(name: string): string | undefined {
@@ -85,7 +89,7 @@ function getOptionalBooleanInput(name: string): boolean | undefined {
   return core.getBooleanInput(name);
 }
 
-function loadOrBuildManifest(
+async function loadOrBuildManifest(
   github: GitHub,
   inputs: ActionInputs
 ): Promise<Manifest> {
@@ -100,52 +104,90 @@ function loadOrBuildManifest(
         changelogHost: inputs.changelogHost,
         versioning: inputs.versioningStrategy,
         releaseAs: inputs.releaseAs,
+        prerelease: inputs.prerelease,
+        prereleaseType: inputs.prereleaseType,
       },
       {
         fork: inputs.fork,
         skipLabeling: inputs.skipLabeling,
+        prerelease: inputs.prerelease,
       },
       inputs.path
     );
   }
-  const manifestOverrides = inputs.fork || inputs.skipLabeling
+
+  const manifestOverrides: any = inputs.fork || inputs.skipLabeling || inputs.prerelease !== undefined || inputs.prereleaseType
     ? {
         fork: inputs.fork,
         skipLabeling: inputs.skipLabeling,
+        prerelease: inputs.prerelease,
+        prereleaseType: inputs.prereleaseType,
       }
     : {};
+
   core.debug('Loading manifest from config file');
-  return Manifest.fromManifest(
-    github,
-    github.repository.defaultBranch,
-    inputs.configFile,
-    inputs.manifestFile,
-    manifestOverrides
-  ).then(manifest => {
-    // Override changelogHost for all paths if provided as action input and different from default
-    if (inputs.changelogHost && inputs.changelogHost !== DEFAULT_GITHUB_SERVER_URL) {
-      core.debug(`Overriding changelogHost to: ${inputs.changelogHost}`);
-      for (const path in manifest.repositoryConfig) {
+
+  try {
+    const manifest = await Manifest.fromManifest(
+      github,
+      github.repository.defaultBranch,
+      inputs.configFile,
+      inputs.manifestFile,
+      manifestOverrides
+    );
+
+    core.debug(`Manifest loaded. repositoryConfig keys: ${manifest.repositoryConfig ? Object.keys(manifest.repositoryConfig).join(', ') : 'undefined'}`);
+
+    const paths = manifest.repositoryConfig ? Object.keys(manifest.repositoryConfig) : [];
+    core.debug('Found manifest with paths: ' + paths.join(', '));
+
+    if (paths.length === 0) {
+      core.debug('No paths found in manifest repositoryConfig');
+    }
+
+    // Override changelogHost, prerelease and prereleaseType for all paths if provided as action input and maybe also different from default
+    for (const path of paths) {
+      core.debug('Trying to override manifest settings for path: ' + path);
+
+      if (inputs.changelogHost && inputs.changelogHost !== DEFAULT_GITHUB_SERVER_URL) {
+        core.debug(`Overriding changelogHost to: ${inputs.changelogHost}`);
         manifest.repositoryConfig[path].changelogHost = inputs.changelogHost;
       }
+
+      if (inputs.prerelease !== undefined) {
+        core.debug(`Overriding prerelease to: ${inputs.prerelease} for path: ${path}`);
+        manifest.repositoryConfig[path].prerelease = inputs.prerelease;
+      }
+
+      if (inputs.prereleaseType) {
+        core.debug(`Overriding prereleaseType to: ${inputs.prereleaseType} for path: ${path}`);
+        manifest.repositoryConfig[path].prereleaseType = inputs.prereleaseType;
+      }
     }
+
     return manifest;
-  });
+  } catch (e: Error | any) {
+    core.error(`Failed to load manifest: ${e.message}`);
+    if (e.stack) {
+      core.debug(e.stack);
+    }
+    throw e;
+  }
 }
 
 export async function main(fetchOverride?: any) {
-  core.info(`Running release-please version: ${VERSION}`)
+  core.debug(`Running release-please version: ${VERSION}`)
+
   const inputs = parseInputs();
   const github = await getGitHubInstance(inputs, fetchOverride);
+  const manifest = await loadOrBuildManifest(github, inputs);
 
   if (!inputs.skipGitHubRelease) {
-    const manifest = await loadOrBuildManifest(github, inputs);
     core.debug('Creating releases');
     outputReleases(await manifest.createReleases());
   }
 
   if (!inputs.skipGitHubPullRequest) {
-    const manifest = await loadOrBuildManifest(github, inputs);
     core.debug('Creating pull requests');
     outputPRs(await manifest.createPullRequests());
   }

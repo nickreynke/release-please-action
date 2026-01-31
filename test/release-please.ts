@@ -218,6 +218,54 @@ describe('release-please-action', () => {
           sinon.match.any,
         );
       });
+
+      it('allows specifying prerelease', async () => {
+        restoreEnv = mockInputs({
+          'release-type': 'simple',
+          'prerelease': 'true',
+        });
+        fakeManifest.createReleases.resolves([]);
+        fakeManifest.createPullRequests.resolves([]);
+        await action.main(fetch);
+        sinon.assert.calledOnce(fakeManifest.createReleases);
+        sinon.assert.calledOnce(fakeManifest.createPullRequests);
+
+        sinon.assert.calledWith(
+          fromConfigStub,
+          sinon.match.any,
+          sinon.match.string,
+          sinon.match({
+            releaseType: 'simple',
+            prerelease: true,
+          }),
+          sinon.match.object,
+          sinon.match.any,
+        );
+      });
+
+      it('allows specifying prerelease-type', async () => {
+        restoreEnv = mockInputs({
+          'release-type': 'simple',
+          'prerelease-type': 'alpha',
+        });
+        fakeManifest.createReleases.resolves([]);
+        fakeManifest.createPullRequests.resolves([]);
+        await action.main(fetch);
+        sinon.assert.calledOnce(fakeManifest.createReleases);
+        sinon.assert.calledOnce(fakeManifest.createPullRequests);
+
+        sinon.assert.calledWith(
+          fromConfigStub,
+          sinon.match.any,
+          sinon.match.string,
+          sinon.match({
+            releaseType: 'simple',
+            prereleaseType: 'alpha',
+          }),
+          sinon.match.object,
+          sinon.match.any,
+        );
+      });
     });
 
     describe('with manifest', () => {
@@ -363,6 +411,76 @@ describe('release-please-action', () => {
         // Verify that changelogHost was NOT added when using default value
         assert.strictEqual(fakeManifest.repositoryConfig['.'].changelogHost, undefined);
         assert.strictEqual(fakeManifest.repositoryConfig['packages/foo'].changelogHost, undefined);
+      });
+
+      it('allows specifying prerelease', async () => {
+        restoreEnv = mockInputs({
+          'prerelease': 'true',
+        });
+        // Create a mock repositoryConfig on the existing fakeManifest
+        const mockRepositoryConfig = {
+          '.': { releaseType: 'node' },
+          'packages/foo': { releaseType: 'node' }
+        };
+        // Use Object.defineProperty to set the readonly property
+        Object.defineProperty(fakeManifest, 'repositoryConfig', {
+          value: mockRepositoryConfig,
+          writable: true,
+          configurable: true
+        });
+        fakeManifest.createReleases.resolves([]);
+        fakeManifest.createPullRequests.resolves([]);
+        await action.main(fetch);
+        sinon.assert.calledOnce(fakeManifest.createReleases);
+        sinon.assert.calledOnce(fakeManifest.createPullRequests);
+
+        // Verify that fromManifest is called WITH prerelease in overrides
+        sinon.assert.calledWith(
+          fromManifestStub,
+          sinon.match.any,
+          sinon.match.string,
+          sinon.match.string,
+          sinon.match.string,
+          sinon.match({prerelease: true}),
+        );
+        // Verify that prerelease was added to all paths in repositoryConfig
+        assert.strictEqual(fakeManifest.repositoryConfig['.'].prerelease, true);
+        assert.strictEqual(fakeManifest.repositoryConfig['packages/foo'].prerelease, true);
+      });
+
+      it('allows specifying prerelease-type', async () => {
+        restoreEnv = mockInputs({
+          'prerelease-type': 'alpha',
+        });
+        // Create a mock repositoryConfig on the existing fakeManifest
+        const mockRepositoryConfig = {
+          '.': { releaseType: 'node' },
+          'packages/foo': { releaseType: 'node' }
+        };
+        // Use Object.defineProperty to set the readonly property
+        Object.defineProperty(fakeManifest, 'repositoryConfig', {
+          value: mockRepositoryConfig,
+          writable: true,
+          configurable: true
+        });
+        fakeManifest.createReleases.resolves([]);
+        fakeManifest.createPullRequests.resolves([]);
+        await action.main(fetch);
+        sinon.assert.calledOnce(fakeManifest.createReleases);
+        sinon.assert.calledOnce(fakeManifest.createPullRequests);
+
+        // Verify that fromManifest is called WITH prereleaseType in overrides
+        sinon.assert.calledWith(
+          fromManifestStub,
+          sinon.match.any,
+          sinon.match.string,
+          sinon.match.string,
+          sinon.match.string,
+          sinon.match({prereleaseType: 'alpha'}),
+        );
+        // Verify that prereleaseType was added to all paths in repositoryConfig
+        assert.strictEqual(fakeManifest.repositoryConfig['.'].prereleaseType, 'alpha');
+        assert.strictEqual(fakeManifest.repositoryConfig['packages/foo'].prereleaseType, 'alpha');
       });
     });
 
@@ -578,6 +696,49 @@ describe('release-please-action', () => {
       assert.deepStrictEqual(output.paths_released, '[]');
       assert.deepStrictEqual(output.prs_created, false);
       assert.deepStrictEqual(output.releases_created, false);
+    });
+
+    it('handles empty repositoryConfig gracefully', async () => {
+      restoreEnv = mockInputs({});
+      const fakeManifest = sandbox.createStubInstance(Manifest);
+      // Use Object.defineProperty to set the readonly property to an empty object
+      Object.defineProperty(fakeManifest, 'repositoryConfig', {
+        value: {},
+        writable: true,
+        configurable: true
+      });
+      fakeManifest.createReleases.resolves([]);
+      fakeManifest.createPullRequests.resolves([]);
+      sandbox.stub(Manifest, 'fromManifest').resolves(fakeManifest);
+      
+      const debugSpy = sandbox.spy(core, 'debug');
+      
+      await action.main(fetch);
+      
+      sinon.assert.calledWith(debugSpy, sinon.match('Found manifest with paths: '));
+      sinon.assert.calledWith(debugSpy, sinon.match('No paths found in manifest repositoryConfig'));
+    });
+
+    it('handles undefined repositoryConfig gracefully', async () => {
+      restoreEnv = mockInputs({});
+      const fakeManifest = sandbox.createStubInstance(Manifest);
+      // Use Object.defineProperty to set the readonly property to undefined
+      Object.defineProperty(fakeManifest, 'repositoryConfig', {
+        value: undefined,
+        writable: true,
+        configurable: true
+      });
+      fakeManifest.createReleases.resolves([]);
+      fakeManifest.createPullRequests.resolves([]);
+      sandbox.stub(Manifest, 'fromManifest').resolves(fakeManifest);
+      
+      const debugSpy = sandbox.spy(core, 'debug');
+      
+      await action.main(fetch);
+      
+      sinon.assert.calledWith(debugSpy, sinon.match('Manifest loaded. repositoryConfig keys: undefined'));
+      sinon.assert.calledWith(debugSpy, sinon.match('Found manifest with paths: '));
+      sinon.assert.calledWith(debugSpy, sinon.match('No paths found in manifest repositoryConfig'));
     });
   });
 });
