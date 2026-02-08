@@ -20,6 +20,9 @@ const DEFAULT_MANIFEST_FILE = '.release-please-manifest.json';
 const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
 const DEFAULT_GITHUB_GRAPHQL_URL = 'https://api.github.com';
 const DEFAULT_GITHUB_SERVER_URL = 'https://github.com';
+const DEFAULT_PRERELEASE = false;
+const DEFAULT_PRERELEASE_TYPE = 'beta';
+const DEFAULT_VERSIONING_STRATEGY = 'default';
 
 interface Proxy {
   host: string;
@@ -45,6 +48,8 @@ interface ActionInputs {
   changelogHost: string;
   versioningStrategy?: string;
   releaseAs?: string;
+  prerelease?: boolean;
+  prereleaseType?: string;
 }
 
 function parseInputs(): ActionInputs {
@@ -67,8 +72,10 @@ function parseInputs(): ActionInputs {
     fork: getOptionalBooleanInput('fork'),
     includeComponentInTag: getOptionalBooleanInput('include-component-in-tag'),
     changelogHost: core.getInput('changelog-host') || DEFAULT_GITHUB_SERVER_URL,
-    versioningStrategy: getOptionalInput('versioning-strategy'),
+    versioningStrategy: getOptionalInput('versioning-strategy') || DEFAULT_VERSIONING_STRATEGY,
     releaseAs: getOptionalInput('release-as'),
+    prerelease: getOptionalBooleanInput('prerelease') || DEFAULT_PRERELEASE,
+    prereleaseType: getOptionalInput('prerelease-type') || DEFAULT_PRERELEASE_TYPE
   };
   return inputs;
 }
@@ -87,7 +94,9 @@ function getOptionalBooleanInput(name: string): boolean | undefined {
 
 function loadOrBuildManifest(
   github: GitHub,
-  inputs: ActionInputs
+  inputs: ActionInputs,
+  manifestOverrides: any,
+  releaseAs?: string
 ): Promise<Manifest> {
   if (inputs.releaseType) {
     core.debug('Building manifest from config');
@@ -98,35 +107,48 @@ function loadOrBuildManifest(
         releaseType: inputs.releaseType,
         includeComponentInTag: inputs.includeComponentInTag,
         changelogHost: inputs.changelogHost,
-        versioning: inputs.versioningStrategy,
-        releaseAs: inputs.releaseAs,
+        versioning: inputs.prerelease && (!inputs.versioningStrategy || inputs.versioningStrategy === DEFAULT_VERSIONING_STRATEGY)
+          ? 'prerelease'
+          : inputs.versioningStrategy,
+        releaseAs: releaseAs,
+        prerelease: inputs.prerelease,
+        prereleaseType: inputs.prereleaseType,
       },
       {
         fork: inputs.fork,
         skipLabeling: inputs.skipLabeling,
+        prerelease: inputs.prerelease,
       },
       inputs.path
     );
   }
-  const manifestOverrides = inputs.fork || inputs.skipLabeling
-    ? {
-        fork: inputs.fork,
-        skipLabeling: inputs.skipLabeling,
-      }
-    : {};
   core.debug('Loading manifest from config file');
   return Manifest.fromManifest(
     github,
     github.repository.defaultBranch,
     inputs.configFile,
     inputs.manifestFile,
-    manifestOverrides
-  ).then(manifest => {
-    // Override changelogHost for all paths if provided as action input and different from default
-    if (inputs.changelogHost && inputs.changelogHost !== DEFAULT_GITHUB_SERVER_URL) {
-      core.debug(`Overriding changelogHost to: ${inputs.changelogHost}`);
-      for (const path in manifest.repositoryConfig) {
+    manifestOverrides,
+    undefined,
+    releaseAs
+  ).then(async manifest => {
+    // Override changelogHost, prerelease and prereleaseType for all paths if provided as action input and maybe also different from default
+    for (const path in manifest.repositoryConfig) {
+      if (inputs.changelogHost && inputs.changelogHost !== DEFAULT_GITHUB_SERVER_URL) {
+        core.debug(`Overriding changelogHost to: ${inputs.changelogHost}`);
         manifest.repositoryConfig[path].changelogHost = inputs.changelogHost;
+      }
+      if (inputs.prerelease !== undefined) {
+        core.debug(`Overriding prerelease to: ${inputs.prerelease}`);
+        manifest.repositoryConfig[path].prerelease = inputs.prerelease;
+        if (!manifest.repositoryConfig[path].versioning || manifest.repositoryConfig[path].versioning === DEFAULT_VERSIONING_STRATEGY) {
+          core.debug('Overriding versioning strategy to: prerelease');
+          manifest.repositoryConfig[path].versioning = 'prerelease';
+        }
+      }
+      if (inputs.prereleaseType) {
+        core.debug(`Overriding prereleaseType to: ${inputs.prereleaseType}`);
+        manifest.repositoryConfig[path].prereleaseType = inputs.prereleaseType;
       }
     }
     return manifest;
@@ -138,14 +160,27 @@ export async function main(fetchOverride?: any) {
   const inputs = parseInputs();
   const github = await getGitHubInstance(inputs, fetchOverride);
 
+  const releaseAs = inputs.prerelease && inputs.releaseAs && !inputs.releaseAs.includes('-')
+    ? `${inputs.releaseAs}-${inputs.prereleaseType || DEFAULT_PRERELEASE_TYPE}`
+    : inputs.releaseAs;
+
+  const manifestOverrides: any = inputs.fork || inputs.skipLabeling || inputs.prerelease !== undefined || inputs.prereleaseType
+    ? {
+        fork: inputs.fork,
+        skipLabeling: inputs.skipLabeling,
+        prerelease: inputs.prerelease,
+        prereleaseType: inputs.prereleaseType,
+      }
+    : {};
+
   if (!inputs.skipGitHubRelease) {
-    const manifest = await loadOrBuildManifest(github, inputs);
+    const manifest = await loadOrBuildManifest(github, inputs, manifestOverrides, releaseAs);
     core.debug('Creating releases');
     outputReleases(await manifest.createReleases());
   }
 
   if (!inputs.skipGitHubPullRequest) {
-    const manifest = await loadOrBuildManifest(github, inputs);
+    const manifest = await loadOrBuildManifest(github, inputs, manifestOverrides, releaseAs);
     core.debug('Creating pull requests');
     outputPRs(await manifest.createPullRequests());
   }
